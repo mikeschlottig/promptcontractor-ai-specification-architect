@@ -1,61 +1,79 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Send, Sparkles, User, Bot, CheckCircle2, RefreshCw } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
-import { ScrollArea } from '@/components/ui/scroll-area';
-import { Input } from '@/components/ui/input';
+import React, { useEffect, useRef, useState } from 'react';
+import { Bot, CheckCircle2, Send, Sparkles, User } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { chatService } from '@/lib/chat';
-import { useContractStore } from '@/store/contract-store';
 import { cn } from '@/lib/utils';
-import type { Message, ChatState } from '../../../worker/types';
+import { useContractStore } from '@/store/contract-store';
+import type { ContractDraft, Message } from '../../../worker/types';
 export function AssistantPanel() {
-  const [input, setInput] = useState('');
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [isTyping, setIsTyping] = useState(false);
-  const [latestDraft, setLatestDraft] = useState<any>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
   const activeId = useContractStore((s) => s.activeId);
   const updateContract = useContractStore((s) => s.updateContract);
-  useEffect(() => {
-    if (activeId) {
-      chatService.switchSession(activeId);
-      loadMessages();
-    }
-  }, [activeId]);
-  useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
-  }, [messages, isTyping]);
+  const [input, setInput] = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [latestDraft, setLatestDraft] = useState<ContractDraft | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement | null>(null);
   const loadMessages = async () => {
-    const res = await chatService.getMessages();
-    if (res.success && res.data) {
-      setMessages(res.data.messages);
-      // @ts-ignore - latestDraft is custom extension
-      if (res.data.latestDraft) setLatestDraft(res.data.latestDraft);
+    if (!activeId) return;
+    setError(null);
+    try {
+      const res = await chatService.getMessages();
+      if (!res.success || !res.data) {
+        setError(res.error || 'Failed to load messages.');
+        return;
+      }
+      setMessages(res.data.messages ?? []);
+      setLatestDraft(res.data.latestDraft ?? null);
+    } catch (e) {
+      console.error('[AssistantPanel] loadMessages failed:', e);
+      setError('Failed to load messages.');
     }
   };
+  useEffect(() => {
+    if (!activeId) return;
+    chatService.switchSession(activeId);
+    void loadMessages();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: 'end' });
+  }, [messages, isTyping, error]);
   const handleSend = async () => {
+    if (!activeId) {
+      setError('Select a contract to start chatting.');
+      return;
+    }
     if (!input.trim() || isTyping) return;
-    const userMsg: Message = {
+    setError(null);
+    const messageText = input.trim();
+    const optimisticUserMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: input,
-      timestamp: Date.now()
+      content: messageText,
+      timestamp: Date.now(),
     };
-    setMessages(prev => [...prev, userMsg]);
+    setMessages((prev) => [...prev, optimisticUserMessage]);
     setInput('');
     setIsTyping(true);
-    const res = await chatService.sendMessage(input, undefined, (chunk) => {
-      // Handle streaming if needed, but for now we'll just wait for complete
-    });
-    if (res.success && res.data) {
-      setMessages(res.data.messages);
-      // @ts-ignore
-      if (res.data.latestDraft) setLatestDraft(res.data.latestDraft);
+    try {
+      // Non-streaming: we need the JSON state back to update messages + latestDraft reliably.
+      const res = await chatService.sendMessage(messageText);
+      if (!res.success || !res.data) {
+        setError(res.error || 'Failed to send message.');
+        return;
+      }
+      setMessages(res.data.messages ?? []);
+      setLatestDraft(res.data.latestDraft ?? null);
+    } catch (e) {
+      console.error('[AssistantPanel] sendMessage failed:', e);
+      setError('Failed to send message.');
+    } finally {
+      setIsTyping(false);
     }
-    setIsTyping(false);
   };
   const applyDraft = () => {
     if (!latestDraft || !activeId) return;
@@ -63,7 +81,7 @@ export function AssistantPanel() {
       goal: latestDraft.goal,
       constraints: latestDraft.constraints,
       format: latestDraft.format,
-      failureConditions: latestDraft.failureConditions
+      failureConditions: latestDraft.failureConditions,
     });
     setLatestDraft(null);
   };
@@ -74,30 +92,64 @@ export function AssistantPanel() {
           <Sparkles className="w-4 h-4 text-primary" />
           <h2 className="font-semibold text-sm">Contract Assistant</h2>
         </div>
-        <Badge variant="outline" className="text-[10px] uppercase">v1.0</Badge>
+        <Badge variant="outline" className="text-[10px] uppercase">
+          v1.0
+        </Badge>
       </div>
-      <ScrollArea className="flex-1 p-4" viewportRef={scrollRef}>
+      <ScrollArea className="flex-1 p-4">
         <div className="space-y-6">
+          {error && (
+            <div className="rounded-lg border bg-background p-3 text-xs">
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-foreground">{error}</p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 px-2"
+                  onClick={() => void loadMessages()}
+                >
+                  Retry
+                </Button>
+              </div>
+            </div>
+          )}
           {messages.map((m) => (
-            <div key={m.id} className={cn("flex gap-3", m.role === 'user' ? "flex-row-reverse" : "flex-row")}>
-              <div className={cn("w-8 h-8 rounded-full flex items-center justify-center shrink-0", 
-                m.role === 'user' ? "bg-primary text-primary-foreground" : "bg-muted border")}>
+            <div
+              key={m.id}
+              className={cn('flex gap-3', m.role === 'user' ? 'flex-row-reverse' : 'flex-row')}
+            >
+              <div
+                className={cn(
+                  'w-8 h-8 rounded-full flex items-center justify-center shrink-0',
+                  m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted border'
+                )}
+                aria-hidden="true"
+              >
                 {m.role === 'user' ? <User className="w-4 h-4" /> : <Bot className="w-4 h-4" />}
               </div>
-              <div className={cn("max-w-[85%] rounded-2xl p-3 text-sm shadow-sm",
-                m.role === 'user' ? "bg-primary text-primary-foreground" : "bg-background border")}>
+              <div
+                className={cn(
+                  'max-w-[85%] rounded-2xl p-3 text-sm shadow-sm whitespace-pre-wrap break-words',
+                  m.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-background border'
+                )}
+              >
                 {m.content}
               </div>
             </div>
           ))}
           {isTyping && (
-            <div className="flex gap-3 animate-pulse">
-              <div className="w-8 h-8 rounded-full bg-muted border flex items-center justify-center">
+            <div className="flex gap-3 animate-pulse" aria-live="polite">
+              <div
+                className="w-8 h-8 rounded-full bg-muted border flex items-center justify-center"
+                aria-hidden="true"
+              >
                 <Bot className="w-4 h-4" />
               </div>
-              <div className="bg-background border rounded-2xl p-3 text-sm">Drafting...</div>
+              <div className="bg-background border rounded-2xl p-3 text-sm">Drafting…</div>
             </div>
           )}
+          <div ref={endRef} />
         </div>
       </ScrollArea>
       {latestDraft && (
@@ -107,23 +159,33 @@ export function AssistantPanel() {
               <CheckCircle2 className="w-4 h-4 text-green-500" />
               New Contract Draft Available
             </div>
-            <Button size="sm" onClick={applyDraft} className="h-8">Apply to Editor</Button>
+            <Button size="sm" onClick={applyDraft} className="h-8">
+              Apply to Editor
+            </Button>
           </div>
         </div>
       )}
       <div className="p-4 bg-background border-t">
-        <form onSubmit={(e) => { e.preventDefault(); handleSend(); }} className="relative">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleSend();
+          }}
+          className="relative"
+        >
           <Input
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Describe your prompt goal..."
+            placeholder="Describe your prompt goal…"
             className="pr-12 py-6 rounded-xl bg-muted/50 focus-visible:ring-1"
+            aria-label="Message the assistant"
           />
-          <Button 
-            type="submit" 
-            size="icon" 
-            disabled={!input.trim() || isTyping}
+          <Button
+            type="submit"
+            size="icon"
+            disabled={!input.trim() || isTyping || !activeId}
             className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg w-8 h-8"
+            aria-label="Send message"
           >
             <Send className="w-4 h-4" />
           </Button>

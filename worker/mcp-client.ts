@@ -16,7 +16,10 @@ export class MCPManager {
     for (const serverConfig of MCP_SERVERS) {
       try {
         const transport = new SSEClientTransport(new URL(serverConfig.sseUrl));
-        const client = new Client({ name: 'contractor-agent', version: '1.0.0' }, { capabilities: {} });
+        const client = new Client(
+          { name: 'contractor-agent', version: '1.0.0' },
+          { capabilities: {} }
+        );
         await client.connect(transport);
         this.clients.set(serverConfig.name, client);
         const toolsResult = await client.listTools();
@@ -33,7 +36,7 @@ export class MCPManager {
   }
   async getToolDefinitions() {
     await this.initialize();
-    const allTools = [];
+    const allTools: any[] = [];
     for (const [serverName, client] of this.clients.entries()) {
       try {
         const toolsResult = await client.listTools();
@@ -44,12 +47,14 @@ export class MCPManager {
               function: {
                 name: tool.name,
                 description: tool.description || '',
-                parameters: tool.inputSchema || { type: 'object', properties: {}, required: [] }
-              }
+                parameters: tool.inputSchema || { type: 'object', properties: {}, required: [] },
+              },
             });
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[mcp-client] listTools failed; skipping server tools:', { serverName, error: e });
+      }
     }
     return allTools;
   }
@@ -61,7 +66,9 @@ export class MCPManager {
     if (!client) throw new Error(`Client ${serverName} not available`);
     const result = await client.callTool({ name: toolName, arguments: args });
     if (result.isError) throw new Error('Tool execution failed');
-    return Array.isArray(result.content) ? result.content.map((c: any) => c.text).join('\n') : 'No content';
+    return Array.isArray(result.content)
+      ? result.content.map((c: any) => c.text).join('\n')
+      : 'No content';
   }
 }
 export const mcpManager = new MCPManager();
