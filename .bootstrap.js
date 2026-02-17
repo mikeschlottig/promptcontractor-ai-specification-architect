@@ -78,7 +78,8 @@ function updateWranglerJsonc() {
 
 function runSetupCommands() {
     const commands = [
-    "bun install react-textarea-autosize"
+    "bun install react-textarea-autosize",
+    "bun add react-textarea-autosize"
 ];
     
     if (commands.length === 0) {
