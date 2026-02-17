@@ -1,14 +1,20 @@
 import OpenAI from 'openai';
 import type { Message, ToolCall, ChatState } from './types';
 import { getToolDefinitions, executeTool } from './tools';
-import { ChatCompletionMessageFunctionToolCall } from 'openai/resources/index.mjs';
+type OpenAIToolCall = {
+  id: string;
+  function: {
+    name: string;
+    arguments?: string;
+  };
+};
 export class ChatHandler {
   private client: OpenAI;
   private model: string;
   constructor(aiGatewayUrl: string, apiKey: string, model: string) {
     this.client = new OpenAI({
       baseURL: aiGatewayUrl,
-      apiKey: apiKey
+      apiKey: apiKey,
     });
     this.model = model;
   }
@@ -23,51 +29,58 @@ export class ChatHandler {
   }> {
     const messages = this.buildConversationMessages(message, conversationHistory);
     const toolDefinitions = await getToolDefinitions();
+    // Streaming is currently handled at the Agent layer; keep OpenAI request non-streaming.
+    void onChunk;
     const completion = await this.client.chat.completions.create({
       model: this.model,
       messages,
       tools: toolDefinitions,
       tool_choice: 'auto',
       max_tokens: 4000,
-      stream: false
+      stream: false,
     });
-    const responseMessage = completion.choices[0]?.message;
+    const responseMessage = completion.choices[0]?.message as unknown as {
+      content?: string | null;
+      tool_calls?: unknown;
+    };
     if (!responseMessage) {
       return { content: 'I apologize, but I encountered an issue.' };
     }
-    if (!responseMessage.tool_calls) {
+    const rawToolCalls = responseMessage.tool_calls;
+    const openAiToolCalls = (Array.isArray(rawToolCalls) ? rawToolCalls : []) as OpenAIToolCall[];
+    if (openAiToolCalls.length === 0) {
       return {
-        content: responseMessage.content || 'How can I help you refine your prompt contract today?'
+        content: responseMessage.content || 'How can I help you refine your prompt contract today?',
       };
     }
-    const toolCalls = await this.executeToolCalls(responseMessage.tool_calls as ChatCompletionMessageFunctionToolCall[], state);
+    const toolCalls = await this.executeToolCalls(openAiToolCalls, state);
     const finalResponse = await this.generateToolResponse(
       message,
       conversationHistory,
-      responseMessage.tool_calls,
+      openAiToolCalls as unknown as any[],
       toolCalls
     );
     return { content: finalResponse, toolCalls };
   }
-  private async executeToolCalls(openAiToolCalls: ChatCompletionMessageFunctionToolCall[], state: ChatState): Promise<ToolCall[]> {
+  private async executeToolCalls(openAiToolCalls: OpenAIToolCall[], state: ChatState): Promise<ToolCall[]> {
     return Promise.all(
       openAiToolCalls.map(async (tc) => {
         try {
-          const args = tc.function.arguments ? JSON.parse(tc.function.arguments) : {};
+          const args = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {};
           const result = await executeTool(tc.function.name, args, state);
           return {
             id: tc.id,
             name: tc.function.name,
             arguments: args,
-            result
+            result,
           };
         } catch (error) {
           console.error(`Tool execution failed:`, error);
           return {
             id: tc.id,
-            name: tc.function.name,
+            name: tc.function?.name || 'unknown_tool',
             arguments: {},
-            result: { error: 'Failed' }
+            result: { error: 'Failed' },
           };
         }
       })
@@ -82,16 +95,20 @@ export class ChatHandler {
     const followUp = await this.client.chat.completions.create({
       model: this.model,
       messages: [
-        { role: 'system', content: 'Respond to the user about the tool results. If you proposed a contract, tell them to review it in the editor.' },
-        ...history.slice(-5).map(m => ({ role: m.role, content: m.content })),
+        {
+          role: 'system',
+          content:
+            'Respond to the user about the tool results. If you proposed a contract, tell them to review it in the editor.',
+        },
+        ...history.slice(-5).map((m) => ({ role: m.role, content: m.content })),
         { role: 'user', content: userMessage },
         { role: 'assistant', content: null, tool_calls: openAiToolCalls },
         ...toolResults.map((result) => ({
           role: 'tool' as const,
           content: JSON.stringify(result.result),
-          tool_call_id: result.id
-        }))
-      ]
+          tool_call_id: result.id,
+        })),
+      ],
     });
     return followUp.choices[0]?.message?.content || 'Done.';
   }
@@ -106,13 +123,13 @@ export class ChatHandler {
         3. OUTPUT FORMAT: Exact structure (JSON, Markdown, etc).
         4. FAILURE CONDITIONS: What to do if the goal cannot be met.
         When you have enough information, ALWAYS use the 'propose_contract' tool to push a draft to the user.
-        Use 'browse_documentation' to research specific APIs or technologies if the user mentions them.`
+        Use 'browse_documentation' to research specific APIs or technologies if the user mentions them.`,
       },
-      ...history.slice(-10).map(m => ({
+      ...history.slice(-10).map((m) => ({
         role: m.role,
-        content: m.content
+        content: m.content,
       })),
-      { role: 'user' as const, content: userMessage }
+      { role: 'user' as const, content: userMessage },
     ];
   }
   updateModel(newModel: string): void {

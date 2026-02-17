@@ -75,15 +75,28 @@ export function AssistantPanel() {
       setIsTyping(false);
     }
   };
-  const applyDraft = () => {
+  const applyDraft = async () => {
     if (!latestDraft || !activeId) return;
+    setError(null);
     updateContract(activeId, {
       goal: latestDraft.goal,
       constraints: latestDraft.constraints,
       format: latestDraft.format,
       failureConditions: latestDraft.failureConditions,
     });
+    // Optimistically hide it locally, then clear server-side so it doesn't reappear.
     setLatestDraft(null);
+    try {
+      const res = await chatService.clearDraft();
+      if (!res.success) {
+        setError(res.error || 'Applied, but could not dismiss the draft on the server. It may reappear.');
+        return;
+      }
+      setLatestDraft(res.data?.latestDraft ?? null);
+    } catch (e) {
+      console.error('[AssistantPanel] clearDraft failed:', e);
+      setError('Applied, but could not dismiss the draft on the server. It may reappear.');
+    }
   };
   return (
     <div className="flex flex-col h-full bg-muted/30 border-l">
@@ -115,10 +128,7 @@ export function AssistantPanel() {
             </div>
           )}
           {messages.map((m) => (
-            <div
-              key={m.id}
-              className={cn('flex gap-3', m.role === 'user' ? 'flex-row-reverse' : 'flex-row')}
-            >
+            <div key={m.id} className={cn('flex gap-3', m.role === 'user' ? 'flex-row-reverse' : 'flex-row')}>
               <div
                 className={cn(
                   'w-8 h-8 rounded-full flex items-center justify-center shrink-0',
@@ -140,10 +150,7 @@ export function AssistantPanel() {
           ))}
           {isTyping && (
             <div className="flex gap-3 animate-pulse" aria-live="polite">
-              <div
-                className="w-8 h-8 rounded-full bg-muted border flex items-center justify-center"
-                aria-hidden="true"
-              >
+              <div className="w-8 h-8 rounded-full bg-muted border flex items-center justify-center" aria-hidden="true">
                 <Bot className="w-4 h-4" />
               </div>
               <div className="bg-background border rounded-2xl p-3 text-sm">Drafting…</div>
@@ -159,7 +166,7 @@ export function AssistantPanel() {
               <CheckCircle2 className="w-4 h-4 text-green-500" />
               New Contract Draft Available
             </div>
-            <Button size="sm" onClick={applyDraft} className="h-8">
+            <Button size="sm" onClick={() => void applyDraft()} className="h-8">
               Apply to Editor
             </Button>
           </div>
@@ -190,9 +197,7 @@ export function AssistantPanel() {
             <Send className="w-4 h-4" />
           </Button>
         </form>
-        <p className="mt-2 text-[10px] text-center text-muted-foreground">
-          AI can make mistakes. Review drafts carefully.
-        </p>
+        <p className="mt-2 text-[10px] text-center text-muted-foreground">AI can make mistakes. Review drafts carefully.</p>
       </div>
     </div>
   );
