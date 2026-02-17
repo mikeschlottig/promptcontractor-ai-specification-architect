@@ -128,11 +128,12 @@ export class ChatAgent extends Agent<Env, ChatState> {
             this.setState({ ...this.state, streamingMessage: '' });
             
             const response = await this.chatHandler!.processMessage(
-              message, 
+              message,
               this.state.messages,
+              this.state,
               (chunk: string) => {
                 try {
-                  this.setState({ 
+                  this.setState({
                     ...this.state, 
                     streamingMessage: (this.state.streamingMessage || '') + chunk 
                   });
@@ -186,7 +187,8 @@ export class ChatAgent extends Agent<Env, ChatState> {
       // Non-streaming response
       const response = await this.chatHandler.processMessage(
         message, 
-        this.state.messages
+        this.state.messages,
+        this.state
       );
 
       const assistantMessage = createMessage('assistant', response.content, response.toolCalls);
